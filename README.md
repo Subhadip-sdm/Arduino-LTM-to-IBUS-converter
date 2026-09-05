@@ -22,7 +22,7 @@ Connect the Arduino to your setup using this simple pin map:
 | From Device & Pin | To Arduino Pin | Description |
 | :--- | :--- | :--- |
 | **Flight Controller TX** (SoftSerial) | **RX Pin** | Automatically accepts incoming 19200 LTM stream |
-| **FlySky Receiver SENS Port** | **TX Pin** | Transmits the converted iBus telemetry packets |
+| **FlySky Receiver SENS Port** | **TX Pin (11)** | Transmits the converted iBus telemetry packets |
 | **System 5V & GND** | **VCC & GND** | Shared common power and ground rails |
 
 ## 📄 License
