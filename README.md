@@ -1,4 +1,4 @@
-# Arduino-LTM-to-IBUS-converver-
+# Arduino-LTM-to-IBUS-conververter
 An Arduino-based converter that translates Lightweight Telemetry (LTM) from INAV/Betaflight into the FlySky iBus protocol for real-time radio telemetry.
 
 
