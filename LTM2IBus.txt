@@ -1,0 +1,296 @@
+//This code is made by subhadip-sdm which supports LTM to IBUS conversion 
+//The RX pin of Arduino should be connected to the LTM output and 11 pin of Arduino is halfduplex Ibus output pin
+//You can do and remap this code as you want
+
+#include <Arduino.h>
+#include <string.h>
+#include <iBUSTelemetry.h>
+
+float ltm_voltage = 0.0;
+uint8_t ltm_armed = 0;
+uint8_t ltm_mode = 0;
+
+int16_t ltm_pitch = 0;
+int16_t ltm_roll = 0;
+int16_t ltm_heading = 0;
+
+uint8_t ltm_sats = 0;
+uint8_t ltm_fix = 0;
+uint8_t ltm_groundspeed = 0;
+
+int32_t ltm_alt = 0;
+int32_t ltm_lat = 0;
+int32_t ltm_lon = 0;
+
+enum LtmState {
+    LTM_IDLE,
+    LTM_HEADER_START,
+    LTM_HEADER_T,
+    LTM_HEADER_MSGID,
+    LTM_CHECKSUM
+};
+
+LtmState ltm_state = LTM_IDLE;
+
+uint8_t ltm_msgid = 0;
+uint8_t ltm_payload_length = 0;
+uint8_t ltm_payload_counter = 0;
+uint8_t ltm_buffer[64];
+
+#define UPDATE_INTERVAL 500
+
+iBUSTelemetry telemetry(11);
+
+uint32_t prevMillis = 0;
+
+void setup()
+{
+    Serial.begin(19200);
+
+    telemetry.begin();
+
+    telemetry.addSensor(IBUS_MEAS_TYPE_EXTV);
+    telemetry.addSensor(IBUS_MEAS_TYPE_GPS_STATUS);
+    telemetry.addSensor(IBUS_MEAS_TYPE_BAT_CURR);
+    telemetry.addSensor(IBUS_MEAS_TYPE_CMP_HEAD);
+    telemetry.addSensor(IBUS_MEAS_TYPE_COG);
+    telemetry.addSensor(IBUS_MEAS_TYPE_CLIMB_RATE);
+    telemetry.addSensor(IBUS_MEAS_TYPE_YAW);
+    telemetry.addSensor(IBUS_MEAS_TYPE_GPS_DIST);
+    telemetry.addSensor(IBUS_MEAS_TYPE_ARMED);
+    telemetry.addSensor(IBUS_MEAS_TYPE_GROUND_SPEED);
+    telemetry.addSensor(IBUS_MEAS_TYPE_GPS_LAT);
+    telemetry.addSensor(IBUS_MEAS_TYPE_GPS_LON);
+    telemetry.addSensor(IBUS_MEAS_TYPE_GPS_ALT);
+    telemetry.addSensor(IBUS_MEAS_TYPE_ALT);
+    telemetry.addSensor(IBUS_MEAS_TYPE_FLIGHT_MODE);
+}
+
+void loop()
+{
+    while (Serial.available())
+    {
+        uint8_t c = (uint8_t)Serial.read();
+        parseLtmchar(c);
+    }
+
+    updateValues();
+
+    telemetry.run();
+}
+
+void parseLtmchar(uint8_t c)
+{
+    switch (ltm_state)
+    {
+        case LTM_IDLE:
+
+            if (c == '$')
+                ltm_state = LTM_HEADER_START;
+
+            break;
+
+        case LTM_HEADER_START:
+
+            if (c == 'T')
+                ltm_state = LTM_HEADER_T;
+            else
+                ltm_state = LTM_IDLE;
+
+            break;
+
+        case LTM_HEADER_T:
+
+            ltm_msgid = c;
+            ltm_payload_counter = 0;
+
+            if (ltm_msgid == 'G')
+            {
+                ltm_payload_length = 14;
+                ltm_state = LTM_HEADER_MSGID;
+            }
+            else if (ltm_msgid == 'A')
+            {
+                ltm_payload_length = 6;
+                ltm_state = LTM_HEADER_MSGID;
+            }
+            else if (ltm_msgid == 'S')
+            {
+                ltm_payload_length = 7;
+                ltm_state = LTM_HEADER_MSGID;
+            }
+            else
+            {
+                ltm_state = LTM_IDLE;
+            }
+
+            break;
+
+        case LTM_HEADER_MSGID:
+
+            ltm_buffer[ltm_payload_counter++] = c;
+
+            if (ltm_payload_counter >= ltm_payload_length)
+                ltm_state = LTM_CHECKSUM;
+
+            break;
+
+        case LTM_CHECKSUM:
+
+            decodeLtmPacket(ltm_msgid, ltm_buffer);
+
+            ltm_state = LTM_IDLE;
+
+            break;
+    }
+}
+
+void decodeLtmPacket(uint8_t msgid, uint8_t *buf)
+{
+    if (msgid == 'G')
+    {
+        memcpy(&ltm_lat, &buf[0], 4);
+        memcpy(&ltm_lon, &buf[4], 4);
+
+        ltm_groundspeed = buf[8];
+
+        memcpy(&ltm_alt, &buf[9], 4);
+
+        ltm_sats = buf[13] >> 2;
+        ltm_fix  = buf[13] & 0x03;
+    }
+    else if (msgid == 'A')
+    {
+        int16_t p;
+        int16_t r;
+        int16_t h;
+
+        memcpy(&p, &buf[0], 2);
+        memcpy(&r, &buf[2], 2);
+        memcpy(&h, &buf[4], 2);
+
+        ltm_pitch   = p;
+        ltm_roll    = r;
+        ltm_heading = h;
+    }
+    else if (msgid == 'S')
+    {
+        uint16_t vbat;
+
+        memcpy(&vbat, &buf[0], 2);
+
+        ltm_voltage = (float)vbat / 1000.0f;
+
+        uint8_t statusByte = buf[6];
+
+        ltm_armed = statusByte & 0x01;
+
+        ltm_mode = statusByte >> 2;
+    }
+}
+
+uint8_t getUniversalMappedMode(uint8_t mode)
+{
+    switch (mode)
+    {
+        case 0:
+        case 2:
+        case 3:
+        case 5:
+        case 6:
+        case 7:
+        case 11:
+            return 0;
+
+        case 1:
+        case 4:
+            return 1;
+
+        case 8:
+            return 2;
+
+        case 10:
+        case 16:
+        case 17:
+        case 18:
+        case 20:
+        case 21:
+            return 3;
+
+        case 9:
+        case 14:
+            return 5;
+
+        case 12:
+            return 7;
+
+        case 13:
+            return 6;
+
+        case 15:
+            return 9;
+
+        default:
+            return 0;
+    }
+}
+
+void updateValues()
+{
+    uint32_t currMillis = millis();
+
+    if (currMillis - prevMillis >= UPDATE_INTERVAL)
+    {
+        prevMillis = currMillis;
+
+        telemetry.setSensorValueFP(1, ltm_voltage);
+
+        telemetry.setSensorValue(3, 0);
+
+        telemetry.setSensorValue(4, ltm_heading);
+
+        telemetry.setSensorValue(5, 0);
+
+        telemetry.setSensorValue(6, 0);
+
+        telemetry.setSensorValue(7, ltm_roll);
+
+        telemetry.setSensorValue(8, 0);
+
+        telemetry.setSensorValue(9, ltm_armed);
+
+        telemetry.setSensorValue(10, ltm_groundspeed);
+
+        telemetry.setSensorValue(
+            15,
+            getUniversalMappedMode(ltm_mode)
+        );
+
+        if (ltm_fix > 0)
+        {
+            telemetry.setSensorValue(
+                2,
+                telemetry.gpsStateValues(ltm_fix, ltm_sats)
+            );
+
+            telemetry.setSensorValue(11, ltm_lat);
+
+            telemetry.setSensorValue(12, ltm_lon);
+
+            telemetry.setSensorValue(13, ltm_alt);
+            telemetry.setSensorValue(14, ltm_alt);
+        }
+        else
+        {
+            telemetry.setSensorValue(
+                2,
+                telemetry.gpsStateValues(0, 0)
+            );
+
+            telemetry.setSensorValue(11, 0);
+            telemetry.setSensorValue(12, 0);
+            telemetry.setSensorValue(13, 0);
+            telemetry.setSensorValue(14, 0);
+        }
+    }
+}
